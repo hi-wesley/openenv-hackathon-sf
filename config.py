@@ -103,8 +103,8 @@ class EnvConfig(BaseModel):
     local_model_device: str = Field(default="auto")
     local_model_local_files_only: bool = Field(default=False)
     local_model_max_new_tokens: int = Field(default=256)
-    local_assistant_temperature: float = Field(default=0.2)
-    local_simulator_temperature: float = Field(default=0.6)
+    local_assistant_temperature: float = Field(default=0.0)
+    local_simulator_temperature: float = Field(default=0.5)
     simulator_base_url: str = Field(default="https://openrouter.ai/api/v1")
     simulator_api_key: str = Field(default="")
     simulator_model: str = Field(default="arcee-ai/trinity-large-preview:free")
@@ -148,8 +148,8 @@ def get_config() -> EnvConfig:
         local_model_device=_env_str("DFA_AGENT_LOCAL_MODEL_DEVICE", "auto"),
         local_model_local_files_only=_env_bool("DFA_AGENT_LOCAL_MODEL_LOCAL_FILES_ONLY", False),
         local_model_max_new_tokens=_env_int("DFA_AGENT_LOCAL_MODEL_MAX_NEW_TOKENS", 256),
-        local_assistant_temperature=_env_float("DFA_AGENT_LOCAL_ASSISTANT_TEMPERATURE", 0.2),
-        local_simulator_temperature=_env_float("DFA_AGENT_LOCAL_SIMULATOR_TEMPERATURE", 0.6),
+        local_assistant_temperature=_env_float("DFA_AGENT_LOCAL_ASSISTANT_TEMPERATURE", 0.0),
+        local_simulator_temperature=_env_float("DFA_AGENT_LOCAL_SIMULATOR_TEMPERATURE", 0.5),
         simulator_base_url=_env_str("SIMULATOR_BASE_URL", _default_simulator_base_url()),
         simulator_api_key=_env_str("SIMULATOR_API_KEY", _default_simulator_api_key()),
         simulator_model=_env_str("SIMULATOR_MODEL", "arcee-ai/trinity-large-preview:free"),

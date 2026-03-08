@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if "dfa_agent_env" not in sys.modules:
@@ -18,7 +19,7 @@ if "dfa_agent_env" not in sys.modules:
     spec.loader.exec_module(module)
 
 from dfa_agent_env.baselines import default_policy
-from dfa_agent_env.models import AssistantAction, EpisodeTrace
+from dfa_agent_env.models import AssistantAction, EpisodeTrace, SimulatorOutput
 from dfa_agent_env.server.environment import DFAAgentEnvironment
 
 
@@ -44,12 +45,33 @@ class EnvironmentTests(unittest.TestCase):
     def test_invalid_action_threshold(self) -> None:
         env = DFAAgentEnvironment()
         obs = env.reset(split="train", seed=9, max_turns=4, mode="train", simulator_backend="mock")
-        bad_action = AssistantAction(message="")
+        bad_action = AssistantAction(message="x" * 5000)
         obs = env.step(bad_action)
         self.assertFalse(obs.done)
         obs = env.step(bad_action)
         self.assertTrue(obs.done)
         self.assertEqual(env.state.done_reason, "invalid_action_threshold_reached")
+
+    def test_opening_backend_error_is_surfaced_without_fallback(self) -> None:
+        class FailingSimulator:
+            def generate_opening_message(self, sim_input):
+                return SimulatorOutput(
+                    user_message="",
+                    continue_episode=False,
+                    backend_error="opening failure",
+                    simulator_notes=["forced failure"],
+                )
+
+            def generate_reply(self, sim_input):
+                raise AssertionError("generate_reply should not run when reset fails")
+
+        with patch("dfa_agent_env.server.environment.build_simulator", return_value=FailingSimulator()):
+            env = DFAAgentEnvironment()
+            obs = env.reset(split="train", seed=1, max_turns=4, mode="train", simulator_backend="local_hf")
+        self.assertTrue(obs.done)
+        self.assertEqual(env.state.done_reason, "fatal_backend_error")
+        self.assertEqual(env.state.final_summary.get("backend_error"), "opening failure")
+        self.assertEqual(env.state.conversation, [])
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ if "dfa_agent_env" not in sys.modules:
     spec.loader.exec_module(module)
 
 from dfa_agent_env.serialization import extract_first_json_object, parse_action_response
+from dfa_agent_env.server.utils import validate_customer_message
 
 
 class SerializationTests(unittest.TestCase):
@@ -34,10 +35,23 @@ class SerializationTests(unittest.TestCase):
         self.assertIsNone(parsed.parse_error)
         self.assertEqual(parsed.action.message, "I can help resolve this and move toward a refund.")
 
-    def test_message_only_fallback(self) -> None:
+    def test_message_only_input_is_reported_as_parse_error(self) -> None:
         parsed = parse_action_response("Just send a short apology and ask for a new time.", allow_message_only=True)
-        self.assertTrue(parsed.used_message_fallback)
-        self.assertIsNotNone(parsed.action)
+        self.assertFalse(parsed.used_message_fallback)
+        self.assertIsNone(parsed.action)
+        self.assertEqual(parsed.parse_error, "No JSON object found in model output.")
+
+    def test_narration_json_is_reported_as_parse_error(self) -> None:
+        parsed = parse_action_response('{"message":"Customer expresses frustration about the delayed order."}')
+        self.assertIsNone(parsed.action)
+        self.assertIn("narration", parsed.parse_error)
+
+    def test_assistant_like_customer_message_is_rejected(self) -> None:
+        errors = validate_customer_message(
+            "I'm really sorry, but I don't think we can get a replacement for these headphones."
+        )
+        self.assertTrue(errors)
+        self.assertIn("support agent", " ".join(errors))
 
 
 if __name__ == "__main__":

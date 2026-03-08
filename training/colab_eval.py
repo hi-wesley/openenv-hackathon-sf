@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
 
 def _make_generator(args: argparse.Namespace):
     if args.policy in BASELINE_REGISTRY:
-        return lambda obs: run_baseline(args.policy, obs)
+        return lambda obs: (run_baseline(args.policy, obs), None, None)
     if args.model_path:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
@@ -41,8 +41,8 @@ def _make_generator(args: argparse.Namespace):
             inputs = tokenizer(obs.prompt_text, return_tensors="pt")
             outputs = model.generate(**inputs, max_new_tokens=256, do_sample=False)
             text = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True)
-            parsed = parse_action_response(text, allow_message_only=True)
-            return parsed.action or AssistantAction.default(text.strip() or "I can help with this.")
+            parsed = parse_action_response(text)
+            return parsed.action or AssistantAction.default(), parsed.parse_error, parsed.raw_text
 
         return _generate
     if args.api_base_url:
@@ -66,8 +66,8 @@ def _make_generator(args: argparse.Namespace):
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             text = payload["choices"][0]["message"]["content"]
-            parsed = parse_action_response(text, allow_message_only=True)
-            return parsed.action or AssistantAction.default(text.strip() or "I can help with this.")
+            parsed = parse_action_response(text)
+            return parsed.action or AssistantAction.default(), parsed.parse_error, parsed.raw_text
 
         return _generate
     raise ValueError("Provide a baseline policy, --model-path, or --api-base-url.")
@@ -89,9 +89,17 @@ def main() -> None:  # pragma: no cover
             simulator_backend=args.simulator_backend,
         )
         while not observation.done:
-            observation = env.step(generator(observation))
+            action, parse_error, raw_text = generator(observation)
+            observation = env.step(
+                action,
+                parse_error_override=parse_error,
+                raw_model_output=raw_text,
+            )
         trace = env.state.final_summary["trace"]
         traces.append(trace)
+        parse_validity = 1.0
+        if env.state.per_turn_logs:
+            parse_validity = sum(float(log.parse_valid) for log in env.state.per_turn_logs) / len(env.state.per_turn_logs)
         rows.append(
             EvalSummaryRow(
                 run_name=args.policy or args.model_path or args.api_model,
@@ -104,7 +112,7 @@ def main() -> None:  # pragma: no cover
                 shaped_reward=float(env.state.final_summary.get("shaped_reward_only", 0.0)),
                 final_satisfaction_reward=float(env.state.final_summary.get("final_satisfaction_reward", 0.0)),
                 task_completion=float(env.state.final_summary.get("task_completion_flag", 0.0)),
-                parse_validity=1.0,
+                parse_validity=parse_validity,
                 turns_used=int(env.state.final_summary.get("turns_used", 0)),
                 invalid_action_count=int(env.state.invalid_action_count),
                 customer_summary=env.state.final_summary.get("customer_summary", {}),

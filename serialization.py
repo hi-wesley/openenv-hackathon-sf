@@ -16,6 +16,7 @@ from .models import (
     ParseOutcome,
 )
 from .prompts import COMPACT_TRAIN_TEMPLATE, RICH_DEMO_TEMPLATE
+from .server.utils import merge_error_messages, validate_assistant_message
 
 
 def extract_first_json_object(text: str) -> str | None:
@@ -52,16 +53,12 @@ def parse_action_response(text: str, allow_message_only: bool = False) -> ParseO
     raw = text.strip()
     json_blob = extract_first_json_object(raw)
     if json_blob is None:
-        if allow_message_only and raw:
-            action = AssistantAction.from_message_only(raw)
-            errors = action.validate_action(cfg.message_char_budget)
-            return ParseOutcome(
-                action=None if errors else action,
-                parse_error="; ".join(errors) if errors else None,
-                raw_text=text,
-                used_message_fallback=True,
-            )
-        return ParseOutcome(action=None, parse_error="No JSON object found in model output.", raw_text=text)
+        return ParseOutcome(
+            action=None,
+            parse_error="No JSON object found in model output.",
+            raw_text=text,
+            used_message_fallback=False,
+        )
     try:
         payload = json.loads(json_blob)
     except json.JSONDecodeError as exc:
@@ -71,9 +68,10 @@ def parse_action_response(text: str, allow_message_only: bool = False) -> ParseO
     except Exception as exc:
         return ParseOutcome(action=None, parse_error=f"Action validation failed: {exc}", raw_text=text)
     errors = action.validate_action(cfg.message_char_budget)
+    errors.extend(validate_assistant_message(action.message))
     return ParseOutcome(
         action=None if errors else action,
-        parse_error="; ".join(errors) if errors else None,
+        parse_error=merge_error_messages(errors),
         raw_text=text,
         used_message_fallback=False,
     )

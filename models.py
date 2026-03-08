@@ -63,7 +63,7 @@ class ChatState(BaseModel):
 
 
 class AssistantAction(Action):
-    message: str = Field(min_length=1, description="assistant utterance")
+    message: str = Field(description="assistant utterance")
 
     @classmethod
     def default(cls, message: str = "I can help with that.") -> "AssistantAction":
@@ -167,6 +167,7 @@ class SimulatorOutput(BaseModel):
     proxy_signals: Dict[str, Any] = Field(default_factory=dict)
     objective_achieved: bool = Field(default=False)
     backend_error: str | None = Field(default=None)
+    raw_model_output: str | None = Field(default=None)
 
 
 class DFAObservation(Observation):

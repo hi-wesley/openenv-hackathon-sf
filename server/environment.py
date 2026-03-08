@@ -22,7 +22,7 @@ from dfa_agent_env.server.persona_sampler import initial_chat_state, update_chat
 from dfa_agent_env.server.reward_pipeline import compute_reward_components
 from dfa_agent_env.server.simulator_factory import build_simulator
 from dfa_agent_env.server.trace import build_episode_trace
-from dfa_agent_env.server.utils import score_customer_emotions
+from dfa_agent_env.server.utils import merge_error_messages, score_customer_emotions, validate_assistant_message
 
 
 class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvState]):
@@ -120,34 +120,63 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
         self._generate_opening_customer_turn()
         return self.current_observation()
 
-    def step(self, action: AssistantAction, timeout_s: float | None = None, **_: Any) -> DFAObservation:
+    def step(
+        self,
+        action: AssistantAction,
+        timeout_s: float | None = None,
+        *,
+        parse_error_override: str | None = None,
+        raw_model_output: str | None = None,
+        **_: Any,
+    ) -> DFAObservation:
         if not self._state.scenario or not self._state.chat_state:
             raise RuntimeError("Call reset() before step().")
         if self._state.done_reason:
             return self.current_observation()
 
         normalized_action = action.normalized()
-        parse_error = None
-        validation_errors = normalized_action.validate_action(self.config.message_char_budget)
-        if validation_errors:
+        parse_error = merge_error_messages(
+            parse_error_override,
+            normalized_action.validate_action(self.config.message_char_budget),
+            validate_assistant_message(normalized_action.message),
+        )
+        if parse_error:
             self._state.invalid_action_count += 1
-            parse_error = "; ".join(validation_errors)
-            normalized_action = AssistantAction.default("I’m here to help. Let me give a clearer response.")
+
+        assistant_message = normalized_action.message
+        if parse_error and raw_model_output and raw_model_output.strip():
+            assistant_message = raw_model_output.strip()
+            self._state.final_summary["last_model_output"] = assistant_message
+            self._state.final_summary["last_error_source"] = "assistant"
+        elif parse_error:
+            self._state.final_summary["last_error_source"] = "assistant"
+            self._state.final_summary["last_model_output"] = assistant_message
+        elif assistant_message:
+            self._state.final_summary["last_model_output"] = assistant_message
 
         self._state.conversation.append(
             ConversationMessage(
                 role="assistant",
-                content=normalized_action.message,
+                content=assistant_message,
                 turn_index=self._state.turn_index + 1,
-                metadata=normalized_action.summary(),
+                metadata={
+                    **normalized_action.summary(),
+                    "parse_error": parse_error,
+                    "raw_model_output_present": bool(raw_model_output and raw_model_output.strip()),
+                },
             )
         )
 
         previous_emotions = self._state.chat_state.emotion_scores
         simulator = build_simulator(self._state.simulator_backend, self.config)
-        simulator_output = simulator.generate_reply(self._build_simulator_input(normalized_action))
+        simulator_output = simulator.generate_reply(
+            self._build_simulator_input(normalized_action, assistant_message_override=assistant_message)
+        )
         if simulator_output.backend_error:
             self._state.final_summary["backend_error"] = simulator_output.backend_error
+            self._state.final_summary["last_error_source"] = "simulator"
+        if simulator_output.raw_model_output:
+            self._state.final_summary["last_simulator_output"] = simulator_output.raw_model_output
 
         current_emotions = score_customer_emotions(simulator_output.user_message)
         current_score = current_emotions.composite()
@@ -180,15 +209,17 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
         reward_components = compute_reward_components(
             previous_emotions=previous_emotions,
             current_emotions=current_emotions,
-            parse_valid=parse_error is None,
+            assistant_valid=parse_error is None,
+            simulator_valid=simulator_output.backend_error is None,
             parse_error=parse_error,
+            simulator_error=simulator_output.backend_error,
             scorer_result=None,
             config=self.config,
         )
         self._state.reward_components.append(reward_components)
         self._state.per_turn_logs.append(
             self._build_turn_log(
-                normalized_action.message,
+                assistant_message,
                 simulator_output.user_message,
                 current_emotions,
                 reward_components,
@@ -207,12 +238,12 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
             self._state.final_summary["trace"] = trace.model_dump()
             self._state.final_summary["scorer"] = scorer_result.model_dump()
 
+        self._state.final_summary["last_parse_error"] = parse_error
+        self._state.final_summary["last_reward"] = reward_components.combined_reward
         observation = self.current_observation()
         observation.reward = reward_components.combined_reward
         observation.done = bool(done_reason)
         observation.done_reason = done_reason
-        self._state.final_summary["last_parse_error"] = parse_error
-        self._state.final_summary["last_reward"] = reward_components.combined_reward
         return observation
 
     def close(self) -> None:
@@ -221,7 +252,19 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
     def _generate_opening_customer_turn(self) -> None:
         simulator = build_simulator(self._state.simulator_backend, self.config)
         output = simulator.generate_opening_message(self._build_simulator_input(None, opening=True))
-        opening_text = output.user_message or self._state.scenario.initial_user_message
+        if output.backend_error:
+            self._state.final_summary["backend_error"] = output.backend_error
+            self._state.final_summary["last_error_source"] = "simulator"
+        if output.raw_model_output:
+            self._state.final_summary["last_simulator_output"] = output.raw_model_output
+        opening_text = (output.user_message or "").strip()
+        if not opening_text:
+            self._state.done_reason = "fatal_backend_error" if output.backend_error else "empty_opening_message"
+            self._state.final_summary = self._episode_metrics()
+            self._state.final_summary["backend_error"] = output.backend_error or "Simulator returned an empty opening message."
+            self._state.final_summary["last_error_source"] = "simulator"
+            self._state.final_summary["trace"] = build_episode_trace(self._state).model_dump()
+            return
         opening_emotions = score_customer_emotions(opening_text)
         opening_score = opening_emotions.composite()
         self._state.chat_state = update_chat_state(
@@ -244,14 +287,16 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
                 },
             )
         )
-        if output.backend_error:
-            self._state.final_summary["backend_error"] = output.backend_error
-
-    def _build_simulator_input(self, action: AssistantAction | None, opening: bool = False) -> SimulatorInput:
+    def _build_simulator_input(
+        self,
+        action: AssistantAction | None,
+        opening: bool = False,
+        assistant_message_override: str | None = None,
+    ) -> SimulatorInput:
         return SimulatorInput(
             scenario=self._state.scenario,
             conversation=self._state.conversation,
-            latest_assistant_message=action.message if action else "",
+            latest_assistant_message=assistant_message_override if assistant_message_override is not None else (action.message if action else ""),
             latest_customer_message=self._latest_user_message(),
             latest_customer_emotions=(
                 self._state.chat_state.emotion_scores if self._state.chat_state else EmotionScores()
@@ -328,7 +373,7 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
             customer_emotion_scores=customer_emotions,
             customer_satisfaction_score=customer_emotions.composite(),
             reward_components=reward_components,
-            parse_valid=parse_error is None,
+            parse_valid=parse_error is None and simulator_output.backend_error is None,
             parse_error=parse_error,
             visible_progress=visible_progress,
             simulator_notes=simulator_output.simulator_notes,
@@ -389,6 +434,11 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
             "scenario_family": self._state.scenario.family if self._state.scenario else None,
             "simulator_backend": self._state.simulator_backend,
             "done_reason": self._state.done_reason,
+            "backend_error": self._state.final_summary.get("backend_error"),
+            "last_model_output": self._state.final_summary.get("last_model_output"),
+            "last_simulator_output": self._state.final_summary.get("last_simulator_output"),
+            "last_parse_error": self._state.final_summary.get("last_parse_error"),
+            "last_error_source": self._state.final_summary.get("last_error_source"),
             "customer_emotion_scores": chat_state.emotion_scores.model_dump(),
             "customer_satisfaction_score": round(float(chat_state.satisfaction_score), 4),
             "customer_summary": {

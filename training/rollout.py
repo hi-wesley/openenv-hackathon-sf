@@ -40,8 +40,14 @@ def run_text_rollout(
         completion_text = generate_text(prompt_text, observation.turn_index)
         completion_texts.append(completion_text)
         parsed = parse_action_response(completion_text, allow_message_only=allow_message_only)
-        action = parsed.action or AssistantAction.default("I can help with that. Let me refine it.")
-        result = _to_step_result(env.step(action))
+        action = parsed.action or AssistantAction.default()
+        result = _to_step_result(
+            env.step(
+                action,
+                parse_error_override=parsed.parse_error,
+                raw_model_output=parsed.raw_text,
+            )
+        )
         parse_valid.append(float(parsed.parse_error is None))
     state = env.state()
     trace = EpisodeTrace(**state.final_summary["trace"])
@@ -94,8 +100,14 @@ def run_grpo_rollout_episode(
             skip_special_tokens=True,
         )
         parsed = parse_action_response(completion_text, allow_message_only=allow_message_only)
-        action = parsed.action or AssistantAction.default("I can help with that. Let me restate it more clearly.")
-        result = _to_step_result(env.step(action))
+        action = parsed.action or AssistantAction.default()
+        result = _to_step_result(
+            env.step(
+                action,
+                parse_error_override=parsed.parse_error,
+                raw_model_output=parsed.raw_text,
+            )
+        )
         parse_valid.append(float(parsed.parse_error is None))
     state = env.state()
     trace = EpisodeTrace(**state.final_summary["trace"])

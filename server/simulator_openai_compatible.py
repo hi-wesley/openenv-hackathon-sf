@@ -8,6 +8,7 @@ from dfa_agent_env.models import SimulatorInput, SimulatorOutput
 from dfa_agent_env.prompts import SIMULATOR_OPENING_PROMPT, SIMULATOR_SYSTEM_PROMPT
 from dfa_agent_env.serialization import extract_first_json_object
 from dfa_agent_env.server.simulator_base import BaseUserSimulator
+from dfa_agent_env.server.utils import normalize_simulator_payload
 
 
 class OpenAICompatibleUserSimulator(BaseUserSimulator):
@@ -25,10 +26,11 @@ class OpenAICompatibleUserSimulator(BaseUserSimulator):
     def _generate(self, sim_input: SimulatorInput, *, opening: bool) -> SimulatorOutput:
         if not self.config.simulator_api_key:
             return SimulatorOutput(
-                user_message="Simulator backend is not configured.",
+                user_message="",
                 continue_episode=False,
                 backend_error="Missing SIMULATOR_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY.",
                 simulator_notes=["openai-compatible backend unavailable"],
+                raw_model_output=None,
             )
         prompt = self._build_opening_prompt(sim_input) if opening else self._build_reply_prompt(sim_input)
         body = {
@@ -46,14 +48,15 @@ class OpenAICompatibleUserSimulator(BaseUserSimulator):
             json_blob = extract_first_json_object(content)
             if json_blob is None:
                 raise ValueError("No JSON object in simulator response.")
-            return SimulatorOutput(**json.loads(json_blob))
+            return SimulatorOutput(**normalize_simulator_payload(json.loads(json_blob)), raw_model_output=content)
         except Exception as exc:
             return SimulatorOutput(
-                user_message="The simulator hit a backend error and ended the episode.",
+                user_message="",
                 continue_episode=False,
                 backend_error=str(exc),
                 simulator_notes=["openai-compatible backend failure"],
                 proxy_signals={"backend_error": 1.0},
+                raw_model_output=locals().get("content"),
             )
 
     def _build_opening_prompt(self, sim_input: SimulatorInput) -> str:

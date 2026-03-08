@@ -8,8 +8,10 @@ def compute_reward_components(
     *,
     previous_emotions: EmotionScores,
     current_emotions: EmotionScores,
-    parse_valid: bool,
+    assistant_valid: bool,
+    simulator_valid: bool,
     parse_error: str | None,
+    simulator_error: str | None,
     scorer_result: SatisfactionScoreResult | None,
     config: EnvConfig,
 ) -> RewardComponents:
@@ -17,7 +19,7 @@ def compute_reward_components(
     current_score = current_emotions.composite()
     score_delta_reward = max(-1.0, min(1.0, current_score - previous_score))
     turn_satisfaction_reward = current_score
-    format_validity_reward = 1.0 if parse_valid else config.invalid_action_penalty
+    format_validity_reward = 1.0 if assistant_valid and simulator_valid else config.invalid_action_penalty
     final_satisfaction_reward = 0.0
     notes = []
 
@@ -26,6 +28,8 @@ def compute_reward_components(
         notes.append("final scorer available")
     if parse_error:
         notes.append(parse_error)
+    if simulator_error:
+        notes.append(simulator_error)
 
     combined_reward = (
         config.reward_weight_score_delta * score_delta_reward

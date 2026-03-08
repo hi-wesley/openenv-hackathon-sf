@@ -6,7 +6,8 @@ from typing import Any
 
 from dfa_agent_env.baselines import BASELINE_REGISTRY, run_baseline
 from dfa_agent_env.config import LOGS_DIR
-from dfa_agent_env.models import DFAObservation, EpisodeTrace
+from dfa_agent_env.models import AssistantAction, DFAObservation, EpisodeTrace
+from dfa_agent_env.prompts import ASSISTANT_SYSTEM_PROMPT
 from dfa_agent_env.scenario_schema import iter_scenarios, load_demo_story_cards
 from dfa_agent_env.server.environment import DFAAgentEnvironment
 from dfa_agent_env.server.local_hf import generate_chat_text
@@ -89,6 +90,24 @@ def _live_trace(env: DFAAgentEnvironment) -> dict[str, Any]:
     }
 
 
+def _done_text(env: DFAAgentEnvironment, observation: DFAObservation) -> str:
+    backend_error = env.state.final_summary.get("backend_error")
+    if observation.done_reason and backend_error:
+        return f"{observation.done_reason}: {backend_error}"
+    return observation.done_reason or backend_error or ""
+
+
+def _diagnostics_payload(env: DFAAgentEnvironment, observation: DFAObservation) -> dict[str, Any]:
+    return {
+        "error_source": env.state.final_summary.get("last_error_source"),
+        "assistant_parse_error": env.state.final_summary.get("last_parse_error"),
+        "simulator_error": env.state.final_summary.get("backend_error"),
+        "raw_assistant_output": env.state.final_summary.get("last_model_output"),
+        "raw_simulator_output": env.state.final_summary.get("last_simulator_output"),
+        "observation_parse_error": observation.parse_error,
+    }
+
+
 def build_custom_tab(web_manager, metadata=None, **kwargs):  # pragma: no cover - exercised in runtime
     import gradio as gr
 
@@ -137,13 +156,15 @@ def build_custom_tab(web_manager, metadata=None, **kwargs):  # pragma: no cover 
                     label="Baseline Policy",
                 )
                 reset_button = gr.Button("Reset Episode", variant="primary")
-                step_button = gr.Button("Step Baseline")
+                step_button = gr.Button("Step Episode")
+                run_full_button = gr.Button("Run Full Episode")
                 compare_button = gr.Button("Compare Baselines")
                 done_reason = gr.Textbox(label="Done Reason", interactive=False)
                 scorer_box = gr.JSON(label="Scorer Result")
             with gr.Column(scale=2):
                 metrics_json = gr.JSON(label="Episode Metrics")
                 progress_json = gr.JSON(label="Visible Progress")
+                diagnostics_json = gr.JSON(label="Diagnostics")
                 trace_json = gr.JSON(label="Trace JSON")
                 download_file = gr.File(label="Download Trace")
 
@@ -174,6 +195,47 @@ def build_custom_tab(web_manager, metadata=None, **kwargs):  # pragma: no cover 
             value = choices[0] if choices else None
             return gr.update(choices=choices, value=value)
 
+        def _button_updates(observation: DFAObservation):
+            if observation.done:
+                return (
+                    gr.update(value="Episode Complete", interactive=False),
+                    gr.update(value="Episode Complete", interactive=False),
+                )
+            return (
+                gr.update(value="Step Episode", interactive=True),
+                gr.update(value="Run Full Episode", interactive=True),
+            )
+
+        def _render_episode_outputs(env: DFAAgentEnvironment, observation: DFAObservation, trace: dict[str, Any] | None = None):
+            live_trace = trace or env.state.final_summary.get("trace", _live_trace(env))
+            download = _maybe_write_trace(env) if observation.done else None
+            step_update, run_full_update = _button_updates(observation)
+            return (
+                env,
+                live_trace,
+                _render_transcript(observation),
+                _render_emotion_table(live_trace),
+                _render_reward_table(live_trace),
+                observation.episode_metrics_visible,
+                observation.task_progress_visible,
+                _done_text(env, observation),
+                env.state.satisfaction_score.model_dump() if env.state.satisfaction_score else {},
+                _diagnostics_payload(env, observation),
+                live_trace,
+                download,
+                step_update,
+                run_full_update,
+            )
+
+        def _next_action(env: DFAAgentEnvironment, observation: DFAObservation, assistant_backend: str, baseline: str):
+            parse_error_override = None
+            raw_model_output = None
+            if assistant_backend == "local_hf":
+                action, parse_error_override, raw_model_output = _local_assistant_action(env, observation)
+            else:
+                action = run_baseline(baseline, observation)
+            return action, parse_error_override, raw_model_output
+
         def reset_episode(family: str, scenario_id: str, simulator_backend: str, max_turns: int, seed: int):
             env = DFAAgentEnvironment()
             observation = env.reset(
@@ -185,34 +247,21 @@ def build_custom_tab(web_manager, metadata=None, **kwargs):  # pragma: no cover 
                 seed=int(seed),
                 mode="demo",
             )
-            trace = _live_trace(env)
-            return (
-                env,
-                trace,
-                _render_transcript(observation),
-                _render_emotion_table(trace),
-                _render_reward_table(trace),
-                observation.episode_metrics_visible,
-                observation.task_progress_visible,
-                observation.done_reason or "",
-                env.state.satisfaction_score.model_dump() if env.state.satisfaction_score else {},
-                trace,
-                None,
-            )
+            return _render_episode_outputs(env, observation, _live_trace(env))
 
         def _local_assistant_action(env: DFAAgentEnvironment, observation: DFAObservation):
             try:
                 text = generate_chat_text(
-                    system_prompt="You are the assistant policy for DFA Agent. Return strict JSON only.",
+                    system_prompt=ASSISTANT_SYSTEM_PROMPT,
                     user_prompt=observation.prompt_text,
                     temperature=env.config.local_assistant_temperature,
                     max_new_tokens=env.config.local_model_max_new_tokens,
                     config=env.config,
                 )
-                parsed = parse_action_response(text, allow_message_only=True)
-                return parsed.action or run_baseline("default_policy", observation)
-            except Exception:
-                return run_baseline("default_policy", observation)
+                parsed = parse_action_response(text)
+                return parsed.action or AssistantAction.default(), parsed.parse_error, parsed.raw_text
+            except Exception as exc:
+                return AssistantAction.default(), f"Local assistant backend error: {exc}", None
 
         def step_episode(env: DFAAgentEnvironment, trace: dict, assistant_backend: str, baseline: str):
             if env is None:
@@ -221,39 +270,36 @@ def build_custom_tab(web_manager, metadata=None, **kwargs):  # pragma: no cover 
             else:
                 observation = env.current_observation()
             if observation.done:
-                current_trace = env.state.final_summary.get("trace", trace or _live_trace(env))
-                return (
-                    env,
-                    current_trace,
-                    _render_transcript(observation),
-                    _render_emotion_table(current_trace),
-                    _render_reward_table(current_trace),
-                    observation.episode_metrics_visible,
-                    observation.task_progress_visible,
-                    observation.done_reason or "",
-                    env.state.satisfaction_score.model_dump() if env.state.satisfaction_score else {},
-                    current_trace,
-                    _maybe_write_trace(env),
-                )
-            if assistant_backend == "local_hf":
-                action = _local_assistant_action(env, observation)
-            else:
-                action = run_baseline(baseline, observation)
-            next_observation = env.step(action)
-            new_trace = env.state.final_summary.get("trace", _live_trace(env))
-            return (
-                env,
-                new_trace,
-                _render_transcript(next_observation),
-                _render_emotion_table(new_trace),
-                _render_reward_table(new_trace),
-                next_observation.episode_metrics_visible,
-                next_observation.task_progress_visible,
-                next_observation.done_reason or "",
-                env.state.satisfaction_score.model_dump() if env.state.satisfaction_score else {},
-                new_trace,
-                _maybe_write_trace(env) if next_observation.done else None,
+                return _render_episode_outputs(env, observation, trace or _live_trace(env))
+            action, parse_error_override, raw_model_output = _next_action(env, observation, assistant_backend, baseline)
+            next_observation = env.step(
+                action,
+                parse_error_override=parse_error_override,
+                raw_model_output=raw_model_output,
             )
+            return _render_episode_outputs(env, next_observation)
+
+        def run_full_episode(env: DFAAgentEnvironment | None, trace: dict, assistant_backend: str, baseline: str):
+            if env is None:
+                env = DFAAgentEnvironment()
+                observation = env.reset(mode="demo")
+            else:
+                observation = env.current_observation()
+            if observation.done:
+                return _render_episode_outputs(env, observation, trace or _live_trace(env))
+            max_iterations = max(1, env.state.max_turns - env.state.turn_index + 2)
+            for _ in range(max_iterations):
+                if observation.done:
+                    break
+                action, parse_error_override, raw_model_output = _next_action(env, observation, assistant_backend, baseline)
+                observation = env.step(
+                    action,
+                    parse_error_override=parse_error_override,
+                    raw_model_output=raw_model_output,
+                )
+                if observation.done:
+                    break
+            return _render_episode_outputs(env, observation)
 
         def compare_baselines(family: str, scenario_id: str, simulator_backend: str, max_turns: int, seed: int):
             rows = [
@@ -305,7 +351,7 @@ def build_custom_tab(web_manager, metadata=None, **kwargs):  # pragma: no cover 
         reset_button.click(
             reset_episode,
             inputs=[family_dropdown, scenario_dropdown, simulator_dropdown, max_turns_slider, seed_input],
-            outputs=[env_state, trace_state, transcript_html, emotions_html, reward_html, metrics_json, progress_json, done_reason, scorer_box, trace_json, download_file],
+            outputs=[env_state, trace_state, transcript_html, emotions_html, reward_html, metrics_json, progress_json, done_reason, scorer_box, diagnostics_json, trace_json, download_file, step_button, run_full_button],
         )
         for button, card in zip(story_buttons, load_demo_story_cards()):
             button.click(
@@ -317,12 +363,17 @@ def build_custom_tab(web_manager, metadata=None, **kwargs):  # pragma: no cover 
                     seed,
                 ),
                 inputs=[simulator_dropdown, max_turns_slider, seed_input],
-                outputs=[env_state, trace_state, transcript_html, emotions_html, reward_html, metrics_json, progress_json, done_reason, scorer_box, trace_json, download_file],
+                outputs=[env_state, trace_state, transcript_html, emotions_html, reward_html, metrics_json, progress_json, done_reason, scorer_box, diagnostics_json, trace_json, download_file, step_button, run_full_button],
             )
         step_button.click(
             step_episode,
             inputs=[env_state, trace_state, assistant_backend_dropdown, baseline_dropdown],
-            outputs=[env_state, trace_state, transcript_html, emotions_html, reward_html, metrics_json, progress_json, done_reason, scorer_box, trace_json, download_file],
+            outputs=[env_state, trace_state, transcript_html, emotions_html, reward_html, metrics_json, progress_json, done_reason, scorer_box, diagnostics_json, trace_json, download_file, step_button, run_full_button],
+        )
+        run_full_button.click(
+            run_full_episode,
+            inputs=[env_state, trace_state, assistant_backend_dropdown, baseline_dropdown],
+            outputs=[env_state, trace_state, transcript_html, emotions_html, reward_html, metrics_json, progress_json, done_reason, scorer_box, diagnostics_json, trace_json, download_file, step_button, run_full_button],
         )
         compare_button.click(
             compare_baselines,
