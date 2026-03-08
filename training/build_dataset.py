@@ -14,6 +14,7 @@ def build_prompt_records(
     mode: str = "train",
     max_turns: int = 4,
     seed: int = 7,
+    simulator_backend: str = "local_hf",
 ) -> list[dict]:
     env = DFAAgentEnvironment()
     records = []
@@ -24,7 +25,7 @@ def build_prompt_records(
             mode=mode,
             max_turns=max_turns,
             seed=seed,
-            simulator_backend="mock",
+            simulator_backend=simulator_backend,
         )
         records.append(
             {
@@ -45,10 +46,17 @@ def main() -> None:  # pragma: no cover - simple CLI wrapper
     parser.add_argument("--mode", default="train")
     parser.add_argument("--max-turns", type=int, default=4)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--simulator-backend", default="local_hf")
     parser.add_argument("--output", type=Path, default=Path("outputs/evals/prompt_dataset_train.jsonl"))
     args = parser.parse_args()
 
-    rows = build_prompt_records(split=args.split, mode=args.mode, max_turns=args.max_turns, seed=args.seed)
+    rows = build_prompt_records(
+        split=args.split,
+        mode=args.mode,
+        max_turns=args.max_turns,
+        seed=args.seed,
+        simulator_backend=args.simulator_backend,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         "\n".join(json.dumps(row, ensure_ascii=False) for row in rows),
@@ -59,4 +67,3 @@ def main() -> None:  # pragma: no cover - simple CLI wrapper
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-

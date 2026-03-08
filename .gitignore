@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.env
+.env.*
 .coverage
 .pytest_cache/
 .ruff_cache/
@@ -14,4 +16,3 @@ outputs/evals/*
 !outputs/logs/.gitkeep
 !outputs/evals/.gitkeep
 *.ipynb_checkpoints
-

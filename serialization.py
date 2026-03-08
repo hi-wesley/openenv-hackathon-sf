@@ -8,28 +8,14 @@ from typing import Any, Iterable, List
 
 from .config import get_config
 from .models import (
-    ACK_STYLES,
-    LOW_MEDIUM_HIGH,
     AssistantAction,
     ConversationMessage,
     DFAObservation,
     EpisodeTrace,
     EvalSummaryRow,
     ParseOutcome,
-    normalize_choice,
 )
 from .prompts import COMPACT_TRAIN_TEMPLATE, RICH_DEMO_TEMPLATE
-
-
-STYLE_AXES = [
-    "verbosity",
-    "warmth",
-    "humor",
-    "formality",
-    "directness",
-    "initiative",
-    "explanation_depth",
-]
 
 
 def extract_first_json_object(text: str) -> str | None:
@@ -58,16 +44,7 @@ def extract_first_json_object(text: str) -> str | None:
 
 
 def normalize_action_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(payload)
-    for field in STYLE_AXES:
-        normalized[field] = normalize_choice(str(normalized.get(field, "medium")), LOW_MEDIUM_HIGH, "medium")
-    normalized["acknowledgement_style"] = normalize_choice(
-        str(normalized.get("acknowledgement_style", "brief")),
-        ACK_STYLES,
-        "brief",
-    )
-    normalized["message"] = str(normalized.get("message", "")).strip()
-    return normalized
+    return {"message": str(payload.get("message", "")).strip()}
 
 
 def parse_action_response(text: str, allow_message_only: bool = False) -> ParseOutcome:
@@ -105,26 +82,26 @@ def parse_action_response(text: str, allow_message_only: bool = False) -> ParseO
 def _conversation_to_lines(conversation: List[ConversationMessage]) -> str:
     lines = []
     for message in conversation:
-        prefix = f"{message.role.upper()}:"
-        lines.append(f"{prefix} {message.content}")
+        lines.append(f"{message.role.upper()}: {message.content}")
     return "\n".join(lines)
 
 
 def build_prompt_text(observation: DFAObservation, template_name: str = "compact_train") -> str:
     instruction = COMPACT_TRAIN_TEMPLATE if template_name == "compact_train" else RICH_DEMO_TEMPLATE
-    axes = ", ".join(observation.available_style_axes)
     progress_json = json.dumps(observation.task_progress_visible, ensure_ascii=True)
+    emotions_json = json.dumps(observation.customer_emotion_scores.model_dump(), ensure_ascii=True)
     convo = _conversation_to_lines(observation.conversation)
     return (
         f"{instruction}\n\n"
         f"Scenario ID: {observation.scenario_id}\n"
-        f"Family: {observation.family}\n"
+        f"Scenario Family: {observation.family}\n"
         f"Turn: {observation.turn_index}/{observation.max_turns}\n"
         f"Visible context: {observation.visible_context}\n"
-        f"Available style axes: {axes}\n"
+        f"Current customer emotion scores: {emotions_json}\n"
+        f"Current customer satisfaction score: {observation.customer_satisfaction_score:.3f}\n"
         f"Visible progress: {progress_json}\n"
         f"Conversation so far:\n{convo}\n\n"
-        f"Latest user message:\n{observation.latest_user_message}\n"
+        f"Latest customer message:\n{observation.latest_user_message}\n"
     )
 
 
@@ -154,14 +131,14 @@ def eval_rows_to_csv(rows: Iterable[EvalSummaryRow]) -> str:
             "parse_validity",
             "turns_used",
             "invalid_action_count",
-            "persona_summary",
+            "customer_summary",
             "metadata",
         ],
     )
     writer.writeheader()
     for row in rows:
         payload = row.model_dump()
-        payload["persona_summary"] = json.dumps(payload["persona_summary"], ensure_ascii=False)
+        payload["customer_summary"] = json.dumps(payload["customer_summary"], ensure_ascii=False)
         payload["metadata"] = json.dumps(payload["metadata"], ensure_ascii=False)
         writer.writerow(payload)
     return buffer.getvalue()
@@ -172,4 +149,3 @@ def save_text(path: str | Path, content: str) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(content, encoding="utf-8")
     return destination
-

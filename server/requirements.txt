@@ -3,5 +3,7 @@ fastapi==0.115.5
 uvicorn==0.32.0
 gradio==5.8.0
 pydantic==2.10.1
+protobuf>=5.28.0
 PyYAML==6.0.2
-
+torch>=2.4.0
+transformers>=4.46.0

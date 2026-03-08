@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 
 from dfa_agent_env.compat import HAVE_OPENENV, openenv_create_app
 from dfa_agent_env.config import get_config
@@ -17,14 +18,22 @@ def create_application():
     if not HAVE_OPENENV or openenv_create_app is None:
         raise RuntimeError("openenv-core must be installed to run the DFA Agent server.")
     config = get_config()
-    return openenv_create_app(
-        env_class=DFAAgentEnvironment,
+    os.environ.setdefault("ENABLE_WEB_INTERFACE", "true")
+    app = openenv_create_app(
+        env=DFAAgentEnvironment,
         action_cls=AssistantAction,
         observation_cls=DFAObservation,
-        title=config.app_name,
-        description="DFA Agent: multi-turn adaptive assistant benchmark.",
-        gradio_builder=build_custom_tab,
+        env_name=config.app_name,
     )
+    try:
+        import gradio as gr
+
+        dashboard = build_custom_tab(None, metadata={"env_name": config.app_name})
+        app = gr.mount_gradio_app(app, dashboard, path="/dashboard")
+    except Exception as exc:  # pragma: no cover - runtime-only integration path
+        LOGGER.warning("Failed to mount Gradio dashboard at /dashboard: %s", exc)
+    app.title = config.app_name
+    return app
 
 
 app = create_application() if HAVE_OPENENV else None
@@ -43,4 +52,3 @@ def main() -> None:  # pragma: no cover - exercised in runtime
 
 if __name__ == "__main__":  # pragma: no cover - exercised in runtime
     main()
-

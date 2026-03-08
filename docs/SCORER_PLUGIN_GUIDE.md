@@ -29,8 +29,7 @@ class SatisfactionScoreResult(BaseModel):
 The `EpisodeTrace` passed to the scorer includes:
 
 - scenario metadata
-- revealed persona object
-- final hidden state
+- final chat state
 - full conversation
 - per-turn logs
 - reward components
@@ -58,3 +57,4 @@ The raw scorer inputs are also stored in `state.scorer_inputs`.
 - Put extra judge diagnostics in `metadata`.
 - Do not overload shaped reward logic into the final scorer path unless that is explicitly your intended design.
 
+The built-in `EmotionBalanceScorer` is intentionally lightweight and mostly useful as a development default. Replace it if you want a stronger end-of-episode judge.

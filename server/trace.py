@@ -16,8 +16,7 @@ def build_episode_trace(state: DFAEnvState) -> EpisodeTrace:
     return EpisodeTrace(
         episode_id=state.episode_id,
         scenario=state.scenario,
-        persona=state.persona,
-        hidden_state_final=state.hidden_state,
+        chat_state_final=state.chat_state,
         conversation=state.conversation,
         turn_logs=state.per_turn_logs,
         final_summary=state.final_summary,
@@ -39,4 +38,3 @@ def export_traces_jsonl(path: str | Path, traces: Iterable[EpisodeTrace]) -> Pat
 
 def export_eval_summary_csv(path: str | Path, rows: Iterable[EvalSummaryRow]) -> Path:
     return save_text(path, eval_rows_to_csv(rows))
-

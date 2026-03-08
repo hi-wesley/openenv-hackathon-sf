@@ -1,6 +1,12 @@
 # Scenario Data
 
-The dataset is split into `train`, `val`, and `test` JSONL files. Each line is a complete scenario object with these fields:
+The environment now centers on three customer-service scenario families:
+
+- `late_delivery_refund`
+- `damaged_item_replacement`
+- `surprise_billing_cancellation`
+
+Each JSONL row contains:
 
 - `scenario_id`
 - `split`
@@ -8,18 +14,11 @@ The dataset is split into `train`, `val`, and `test` JSONL files. Each line is a
 - `title`
 - `visible_context`
 - `initial_user_message`
+  This is a short seed that the simulator uses to generate the opening customer message.
 - `task_success_criteria`
 - `allowed_turns`
 - `difficulty`
-- `latent_preference_overrides`
 - `simulator_instructions`
 - `tags`
 
-Split policy:
-
-- `train`: 48 scenarios
-- `val`: 12 scenarios
-- `test`: 12 scenarios
-
-Each of the six scenario families has 8 train / 2 val / 2 test examples.
-
+Each split contains one scenario per family for a total of three per split.

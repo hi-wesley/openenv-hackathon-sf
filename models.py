@@ -1,56 +1,42 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal
 
 from .compat import Action, BaseModel, Field, Observation, State
 
-Level = Literal["low", "medium", "high"]
-PersonaLength = Literal["short", "medium", "long"]
-HumorTolerance = Literal["none", "light", "high"]
-FormalityPreference = Literal["casual", "neutral", "formal"]
-AcknowledgementStyle = Literal["none", "brief", "empathetic"]
 SplitName = Literal["train", "val", "test"]
 
-LOW_MEDIUM_HIGH: tuple[str, ...] = ("low", "medium", "high")
-PREFERRED_LENGTHS: tuple[str, ...] = ("short", "medium", "long")
-HUMOR_TOLERANCES: tuple[str, ...] = ("none", "light", "high")
-FORMALITY_PREFERENCES: tuple[str, ...] = ("casual", "neutral", "formal")
-ACK_STYLES: tuple[str, ...] = ("none", "brief", "empathetic")
 
+class EmotionScores(BaseModel):
+    happiness: float = Field(default=0.0)
+    anger: float = Field(default=0.0)
+    annoyance: float = Field(default=0.0)
+    gratitude: float = Field(default=0.0)
 
-def normalize_choice(value: str, choices: tuple[str, ...], default: str | None = None) -> str:
-    normalized = (value or "").strip().lower().replace("very_", "").replace("very ", "")
-    aliases = {
-        "concise": "low",
-        "brief": "low",
-        "detailed": "high",
-        "long": "high",
-        "short": "low",
-        "direct": "high",
-        "indirect": "low",
-        "casual": "low",
-        "formal": "high",
-        "empathetic": "empathetic",
-        "empathy": "empathetic",
-        "ack": "brief",
-        "acknowledge": "brief",
-        "lighthearted": "light",
-        "none": "none",
-        "neutral": "neutral",
-    }
-    normalized = aliases.get(normalized, normalized)
-    if normalized in choices:
-        return normalized
-    if default is not None:
-        return default
-    raise ValueError(f"Expected one of {choices}, got {value!r}")
+    def clipped(self) -> "EmotionScores":
+        def _clip(value: float) -> float:
+            return max(0.0, min(1.0, float(value)))
+
+        return EmotionScores(
+            happiness=_clip(self.happiness),
+            anger=_clip(self.anger),
+            annoyance=_clip(self.annoyance),
+            gratitude=_clip(self.gratitude),
+        )
+
+    def composite(self) -> float:
+        clipped = self.clipped()
+        value = clipped.happiness + clipped.gratitude - clipped.anger - clipped.annoyance
+        return max(-2.0, min(2.0, value)) / 2.0
+
+    def to_dict(self) -> Dict[str, float]:
+        return self.clipped().model_dump()
 
 
 class ConversationMessage(BaseModel):
     role: str = Field(description="speaker role")
     content: str = Field(description="message content")
     turn_index: int | None = Field(default=None)
-    strategy: Dict[str, Any] | None = Field(default=None)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -64,99 +50,58 @@ class ScenarioRecord(BaseModel):
     task_success_criteria: List[str]
     allowed_turns: int
     difficulty: str
-    latent_preference_overrides: Dict[str, Any] = Field(default_factory=dict)
     simulator_instructions: str
     tags: List[str] = Field(default_factory=list)
 
 
-class PersonaProfile(BaseModel):
-    preferred_length: PersonaLength
-    warmth_preference: Level
-    humor_tolerance: HumorTolerance
-    formality_preference: FormalityPreference
-    directness_preference: Level
-    initiative_preference: Level
-    explanation_depth_preference: Level
-    expertise_level: Literal["novice", "intermediate", "expert"] = Field(default="intermediate")
-    time_pressure: Level = Field(default="medium")
-    baseline_patience: float = Field(default=0.6)
-    baseline_emotional_state: Literal["calm", "stressed", "upset", "anxious"] = Field(default="calm")
-
-    def reveal_dict(self) -> Dict[str, Any]:
-        return self.model_dump()
-
-
-class HiddenUserState(BaseModel):
-    trust: float = Field(default=0.45)
-    frustration: float = Field(default=0.25)
-    patience_remaining: float = Field(default=0.7)
-    emotional_state: str = Field(default="neutral")
-    clarity: float = Field(default=0.3)
-    goal_progress: float = Field(default=0.0)
-    last_visible_progress: float = Field(default=0.0)
+class ChatState(BaseModel):
+    emotion_scores: EmotionScores = Field(default_factory=EmotionScores)
+    satisfaction_score: float = Field(default=0.0)
+    objective_achieved: bool = Field(default=False)
+    end_requested: bool = Field(default=False)
     signals: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AssistantAction(Action):
-    verbosity: Level = Field(default="medium")
-    warmth: Level = Field(default="medium")
-    humor: Level = Field(default="low")
-    formality: Level = Field(default="medium")
-    directness: Level = Field(default="medium")
-    initiative: Level = Field(default="medium")
-    explanation_depth: Level = Field(default="medium")
-    acknowledgement_style: AcknowledgementStyle = Field(default="brief")
     message: str = Field(min_length=1, description="assistant utterance")
 
     @classmethod
-    def default(cls, message: str = "Let me help with that.") -> "AssistantAction":
-        return cls(message=message.strip() or "Let me help with that.")
+    def default(cls, message: str = "I can help with that.") -> "AssistantAction":
+        return cls(message=(message or "").strip() or "I can help with that.")
 
     @classmethod
     def from_message_only(cls, message: str) -> "AssistantAction":
         return cls.default(message=message)
 
     def normalized(self) -> "AssistantAction":
-        return self.model_copy(
-            update={
-                "verbosity": normalize_choice(self.verbosity, LOW_MEDIUM_HIGH, "medium"),
-                "warmth": normalize_choice(self.warmth, LOW_MEDIUM_HIGH, "medium"),
-                "humor": normalize_choice(self.humor, LOW_MEDIUM_HIGH, "low"),
-                "formality": normalize_choice(self.formality, LOW_MEDIUM_HIGH, "medium"),
-                "directness": normalize_choice(self.directness, LOW_MEDIUM_HIGH, "medium"),
-                "initiative": normalize_choice(self.initiative, LOW_MEDIUM_HIGH, "medium"),
-                "explanation_depth": normalize_choice(self.explanation_depth, LOW_MEDIUM_HIGH, "medium"),
-                "acknowledgement_style": normalize_choice(self.acknowledgement_style, ACK_STYLES, "brief"),
-                "message": (self.message or "").strip(),
-            },
-            deep=True,
-        )
+        return self.model_copy(update={"message": (self.message or "").strip()}, deep=True)
 
     def validate_action(self, message_char_budget: int) -> List[str]:
+        normalized = self.normalized()
         errors: List[str] = []
-        try:
-            normalized = self.normalized()
-        except ValueError as exc:
-            return [str(exc)]
         if not normalized.message:
             errors.append("message must be non-empty")
         if len(normalized.message) > message_char_budget:
             errors.append(f"message exceeds char budget {message_char_budget}")
         return errors
 
-    def strategy_summary(self) -> Dict[str, Any]:
-        payload = self.model_dump()
-        payload.pop("message", None)
-        payload.pop("metadata", None)
-        return payload
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "message_length": len((self.message or "").strip()),
+            "contains_apology": any(
+                token in (self.message or "").lower()
+                for token in ("sorry", "apologize", "understand", "frustrating")
+            ),
+        }
 
 
 class RewardComponents(BaseModel):
-    task_progress_reward: float = Field(default=0.0)
+    score_delta_reward: float = Field(default=0.0)
+    turn_satisfaction_reward: float = Field(default=0.0)
     format_validity_reward: float = Field(default=0.0)
-    instruction_following_reward: float = Field(default=0.0)
-    satisfaction_score_reward: float = Field(default=0.0)
-    alignment_proxy: float = Field(default=0.0)
+    final_satisfaction_reward: float = Field(default=0.0)
+    current_emotion_scores: EmotionScores = Field(default_factory=EmotionScores)
+    current_satisfaction_score: float = Field(default=0.0)
     combined_reward: float = Field(default=0.0)
     notes: List[str] = Field(default_factory=list)
 
@@ -170,13 +115,14 @@ class ParseOutcome(BaseModel):
 
 class TurnLog(BaseModel):
     turn_index: int
-    assistant_action: Dict[str, Any]
-    user_message: str
+    assistant_message: str
+    customer_message: str
+    customer_emotion_scores: EmotionScores = Field(default_factory=EmotionScores)
+    customer_satisfaction_score: float = Field(default=0.0)
     reward_components: RewardComponents
     parse_valid: bool
     parse_error: str | None = Field(default=None)
     visible_progress: Dict[str, Any] = Field(default_factory=dict)
-    hidden_state_snapshot: Dict[str, Any] = Field(default_factory=dict)
     simulator_notes: List[str] = Field(default_factory=list)
     proxy_signals: Dict[str, Any] = Field(default_factory=dict)
     done: bool = Field(default=False)
@@ -192,11 +138,10 @@ class SatisfactionScoreResult(BaseModel):
 
 class ScorerInputs(BaseModel):
     scenario: ScenarioRecord
-    persona: PersonaProfile
     conversation: List[ConversationMessage]
     turn_logs: List[TurnLog]
     reward_components: List[RewardComponents]
-    final_hidden_state: HiddenUserState
+    final_chat_state: ChatState
     final_summary: Dict[str, Any]
     mode: str
     simulator_backend: str
@@ -204,20 +149,19 @@ class ScorerInputs(BaseModel):
 
 class SimulatorInput(BaseModel):
     scenario: ScenarioRecord
-    persona: PersonaProfile
-    hidden_state: HiddenUserState
     conversation: List[ConversationMessage]
-    latest_action: AssistantAction
-    latest_assistant_message: str
+    latest_assistant_message: str = Field(default="")
+    latest_customer_message: str = Field(default="")
+    latest_customer_emotions: EmotionScores = Field(default_factory=EmotionScores)
     turn_index: int
     max_turns: int
     mode: str
+    opening_turn: bool = Field(default=False)
 
 
 class SimulatorOutput(BaseModel):
     user_message: str
     continue_episode: bool
-    latent_state_delta: Dict[str, Any] = Field(default_factory=dict)
     visible_progress_update: Dict[str, Any] = Field(default_factory=dict)
     simulator_notes: List[str] = Field(default_factory=list)
     proxy_signals: Dict[str, Any] = Field(default_factory=dict)
@@ -235,23 +179,21 @@ class DFAObservation(Observation):
     visible_context: str
     assistant_last_action_summary: Dict[str, Any] = Field(default_factory=dict)
     task_progress_visible: Dict[str, Any] = Field(default_factory=dict)
+    customer_emotion_scores: EmotionScores = Field(default_factory=EmotionScores)
+    customer_satisfaction_score: float = Field(default=0.0)
     done_reason: str | None = Field(default=None)
-    available_style_axes: List[str] = Field(default_factory=list)
     episode_metrics_visible: Dict[str, Any] = Field(default_factory=dict)
     parse_error: str | None = Field(default=None)
-    simulator_backend: str = Field(default="mock")
+    simulator_backend: str = Field(default="openai_compatible")
     prompt_text: str = Field(default="")
-    revealable_persona: Dict[str, Any] | None = Field(default=None)
 
 
 class DFAEnvState(State):
     scenario: ScenarioRecord | None = Field(default=None)
-    persona: PersonaProfile | None = Field(default=None)
-    hidden_state: HiddenUserState | None = Field(default=None)
+    chat_state: ChatState | None = Field(default=None)
     conversation: List[ConversationMessage] = Field(default_factory=list)
     turn_index: int = Field(default=0)
     max_turns: int = Field(default=0)
-    task_progress_hidden: Dict[str, Any] = Field(default_factory=dict)
     satisfaction_score: SatisfactionScoreResult | None = Field(default=None)
     per_turn_logs: List[TurnLog] = Field(default_factory=list)
     final_summary: Dict[str, Any] = Field(default_factory=dict)
@@ -262,15 +204,13 @@ class DFAEnvState(State):
     mode: str = Field(default="demo")
     invalid_action_count: int = Field(default=0)
     done_reason: str | None = Field(default=None)
-    simulator_backend: str = Field(default="mock")
-    reveal_persona_after_done: bool = Field(default=False)
+    simulator_backend: str = Field(default="openai_compatible")
 
 
 class EpisodeTrace(BaseModel):
     episode_id: str | None = Field(default=None)
     scenario: ScenarioRecord
-    persona: PersonaProfile
-    hidden_state_final: HiddenUserState
+    chat_state_final: ChatState
     conversation: List[ConversationMessage]
     turn_logs: List[TurnLog]
     final_summary: Dict[str, Any]
@@ -295,6 +235,5 @@ class EvalSummaryRow(BaseModel):
     parse_validity: float
     turns_used: int
     invalid_action_count: int
-    persona_summary: Dict[str, Any] = Field(default_factory=dict)
+    customer_summary: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-

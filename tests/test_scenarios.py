@@ -22,17 +22,17 @@ from dfa_agent_env.scenario_schema import load_scenarios
 
 class ScenarioDataTests(unittest.TestCase):
     def test_split_counts(self) -> None:
-        self.assertEqual(len(load_scenarios("train")), 48)
-        self.assertEqual(len(load_scenarios("val")), 12)
-        self.assertEqual(len(load_scenarios("test")), 12)
+        self.assertEqual(len(load_scenarios("train")), 3)
+        self.assertEqual(len(load_scenarios("val")), 3)
+        self.assertEqual(len(load_scenarios("test")), 3)
 
     def test_family_distribution(self) -> None:
         train = load_scenarios("train")
         families = {}
         for scenario in train:
             families[scenario.family] = families.get(scenario.family, 0) + 1
-        self.assertEqual(len(families), 6)
-        self.assertTrue(all(count == 8 for count in families.values()))
+        self.assertEqual(len(families), 3)
+        self.assertTrue(all(count == 1 for count in families.values()))
 
 
 if __name__ == "__main__":

@@ -18,9 +18,7 @@ Deploy this repo as a **Docker Space**.
 3. Push this repository to the Space.
 4. In the Space settings, add secrets:
 
-- `OPENAI_API_KEY` or `SIMULATOR_API_KEY`
-- `SIMULATOR_MODEL`
-- `SIMULATOR_BASE_URL` if using a non-OpenAI backend
+- `SIMULATOR_API_KEY` if using an external OpenAI-compatible backend
 
 5. Optional runtime variables:
 
@@ -34,26 +32,24 @@ Deploy this repo as a **Docker Space**.
 - the app loads
 - `/web` loads
 - the default Playground tab exists
-- the DFA Agent custom tab exists
+- `/dashboard` loads
 
 ## Recommended Secrets
 
-- `OPENAI_API_KEY`: if the simulator should call OpenAI directly
 - `SIMULATOR_API_KEY`: if pointing at another OpenAI-compatible backend
-- `SIMULATOR_MODEL`: for example `gpt-4o-mini`, `Qwen/Qwen2.5-7B-Instruct`, or your hosted simulator name
-- `SIMULATOR_BASE_URL`: example `https://api.openai.com/v1`
+- `SIMULATOR_MODEL`: if you want to override the default local model path
+- `SIMULATOR_BASE_URL`: only if you want the optional `openai_compatible` backend
 
 ## Smoke Checklist After Deploy
 
 1. Reset a mock episode.
 2. Step a baseline once.
-3. Switch to `openai_compatible`.
+3. Switch to `local_hf`.
 4. Reset the same scenario again.
-5. Confirm the trace can be downloaded.
+5. Confirm the trace can be downloaded from `/dashboard`.
 
 ## Failure Modes
 
-- Missing API key: the real simulator backend will terminate with a structured backend error
-- Unsupported model output: inspect the simulator trace JSON in the custom tab
+- Missing local model/runtime deps: the `local_hf` simulator backend will terminate with a structured backend error
+- Unsupported model output: inspect the simulator trace JSON in `/dashboard`
 - No `/web`: confirm the Space is exposing port `7860` and the Docker command is the one from [server/Dockerfile](/Users/wesley/Documents/Projects/openenv-hackathon-sf/server/Dockerfile)
-

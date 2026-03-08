@@ -9,6 +9,7 @@ from .models import (
     SatisfactionScoreResult,
 )
 from .scoring import BaseSatisfactionScorer, ConstantSatisfactionScorer, NoopSatisfactionScorer
+from .scoring import EmotionBalanceScorer
 
 __all__ = [
     "AssistantAction",
@@ -18,10 +19,10 @@ __all__ = [
     "DFAAgentEnv",
     "DFAEnvState",
     "DFAObservation",
+    "EmotionBalanceScorer",
     "EpisodeTrace",
     "NoopSatisfactionScorer",
     "ScenarioRecord",
     "SatisfactionScoreResult",
     "run_baseline",
 ]
-

@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="outputs/checkpoints/dfa-agent-grpo")
     parser.add_argument("--train-split", default="train")
     parser.add_argument("--max-turns", type=int, default=4)
+    parser.add_argument("--simulator-backend", default="local_hf")
     parser.add_argument("--num-train-epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=30)
     parser.add_argument("--per-device-train-batch-size", type=int, default=1)
@@ -35,7 +36,13 @@ def main() -> None:  # pragma: no cover - runtime entrypoint
     from transformers import AutoTokenizer
     from trl import GRPOConfig, GRPOTrainer
 
-    rows = build_prompt_records(split=args.train_split, mode="train", max_turns=args.max_turns, seed=7)
+    rows = build_prompt_records(
+        split=args.train_split,
+        mode="train",
+        max_turns=args.max_turns,
+        seed=7,
+        simulator_backend=args.simulator_backend,
+    )
     if args.fast_mode:
         rows = rows[:8]
         args.max_steps = min(args.max_steps, 8)
@@ -61,6 +68,7 @@ def main() -> None:  # pragma: no cover - runtime entrypoint
                 prompt_text=prompt,
                 env=env,
                 max_turns=args.max_turns,
+                simulator_backend=args.simulator_backend,
                 allow_message_only=args.allow_message_only,
             )
             prompt_ids_batch.append(rollout["prompt_ids"])
@@ -113,4 +121,3 @@ def main() -> None:  # pragma: no cover - runtime entrypoint
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-

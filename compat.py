@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import types
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Generic, Optional, Protocol, TypeVar, get_args, get_origin
+from typing import Any, Callable, Dict, Generic, Optional, Protocol, TypeVar, Union, get_args, get_origin, get_type_hints
 
 try:
     from pydantic import BaseModel as _PydanticBaseModel
@@ -103,6 +104,7 @@ except ImportError:  # pragma: no cover - exercised implicitly in the sandbox
                     value = _resolve_default(default)
                     if value is ...:
                         raise TypeError(f"Missing required field: {name}")
+                value = _coerce_value(annotations[name], value)
                 setattr(self, name, value)
             for name, value in extras.items():
                 setattr(self, name, value)
@@ -183,7 +185,14 @@ except ImportError:  # pragma: no cover - exercised implicitly in the sandbox
 def _collect_annotations(cls: type) -> Dict[str, Any]:
     annotations: Dict[str, Any] = {}
     for base in reversed(cls.__mro__):
-        annotations.update(getattr(base, "__annotations__", {}))
+        try:
+            base_annotations = get_type_hints(base, include_extras=True)
+        except Exception:
+            base_annotations = getattr(base, "__annotations__", {})
+        for name, annotation in base_annotations.items():
+            if name in {"model_fields", "model_config"}:
+                continue
+            annotations[name] = annotation
     return annotations
 
 
@@ -222,6 +231,51 @@ def _annotation_to_schema(annotation: Any) -> Dict[str, Any]:
     if str(origin).endswith("Literal") and args:
         return {"type": "string", "enum": list(args)}
     return {"type": "string"}
+
+
+def _coerce_value(annotation: Any, value: Any) -> Any:
+    if value is None:
+        return None
+
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+
+    if origin in (Union, types.UnionType):
+        non_none_args = [arg for arg in args if arg is not type(None)]
+        for arg in non_none_args:
+            try:
+                coerced = _coerce_value(arg, value)
+                if coerced is not None:
+                    return coerced
+            except Exception:
+                continue
+        return value
+
+    if origin in (list, tuple):
+        item_annotation = args[0] if args else Any
+        items = [_coerce_value(item_annotation, item) for item in value]
+        return items if origin is list else tuple(items)
+
+    if origin is dict:
+        value_annotation = args[1] if len(args) > 1 else Any
+        return {key: _coerce_value(value_annotation, item) for key, item in value.items()}
+
+    if isinstance(annotation, type) and hasattr(annotation, "model_validate"):
+        if isinstance(value, annotation):
+            return value
+        if isinstance(value, dict):
+            return annotation.model_validate(value)
+
+    if annotation in (float, "float"):
+        return float(value)
+    if annotation in (int, "int"):
+        return int(value)
+    if annotation in (str, "str"):
+        return str(value)
+    if annotation in (bool, "bool"):
+        return bool(value)
+
+    return value
 
 
 def _to_builtin(value: Any) -> Any:
@@ -339,4 +393,3 @@ class LocalSyncWrapper:
 
     def close(self) -> None:
         asyncio.run(self.client.close())
-

@@ -64,6 +64,7 @@ def run_grpo_rollout_episode(
     prompt_text: str,
     env,
     max_turns: int,
+    simulator_backend: str = "local_hf",
     allow_message_only: bool = False,
 ) -> dict[str, Any]:
     from trl.experimental.openenv import generate_rollout_completions
@@ -75,7 +76,7 @@ def run_grpo_rollout_episode(
         "max_turns": max_turns,
         "seed": 7,
         "mode": "train",
-        "simulator_backend": "mock",
+        "simulator_backend": simulator_backend,
     }
     result = _to_step_result(env.reset(**reset_kwargs))
     prompt_ids: list[int] = []
@@ -109,4 +110,3 @@ def run_grpo_rollout_episode(
         "turns_used": float(metrics.get("turns_used", 0)),
         "trace_json": json.dumps(trace.model_dump(), ensure_ascii=False),
     }
-

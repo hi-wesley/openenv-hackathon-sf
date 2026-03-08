@@ -9,6 +9,9 @@ class BaseUserSimulator(ABC):
     name = "base"
 
     @abstractmethod
-    def generate_reply(self, sim_input: SimulatorInput) -> SimulatorOutput:
+    def generate_opening_message(self, sim_input: SimulatorInput) -> SimulatorOutput:
         raise NotImplementedError
 
+    @abstractmethod
+    def generate_reply(self, sim_input: SimulatorInput) -> SimulatorOutput:
+        raise NotImplementedError

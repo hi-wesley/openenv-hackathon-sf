@@ -27,12 +27,11 @@ class EnvironmentTests(unittest.TestCase):
         env = DFAAgentEnvironment()
         obs = env.reset(
             split="train",
-            scenario_id="email_boss_deadline_train_01",
+            scenario_id="late_delivery_refund_train_01",
             seed=7,
             max_turns=4,
             mode="train",
             simulator_backend="mock",
-            reveal_persona_after_done=True,
         )
         while not obs.done:
             obs = env.step(default_policy(obs))
@@ -40,6 +39,7 @@ class EnvironmentTests(unittest.TestCase):
         trace = EpisodeTrace(**env.state.final_summary["trace"])
         self.assertEqual(len(trace.turn_logs), env.state.turn_index)
         self.assertEqual(len(trace.reward_components), env.state.turn_index)
+        self.assertIn("customer_satisfaction_score", env.state.final_summary)
 
     def test_invalid_action_threshold(self) -> None:
         env = DFAAgentEnvironment()

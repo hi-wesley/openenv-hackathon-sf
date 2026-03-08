@@ -19,7 +19,12 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     for card in load_demo_story_cards():
-        for policy_name in ("default_policy", "always_concise_policy", "always_warm_detailed_policy"):
+        for policy_name in (
+            "default_policy",
+            "always_refund_policy",
+            "always_policy_explanation_policy",
+            "always_escalate_policy",
+        ):
             env = DFAAgentEnvironment()
             obs = env.reset(
                 split="train",
@@ -28,7 +33,6 @@ def main() -> None:
                 seed=args.seed,
                 max_turns=4,
                 mode="demo",
-                reveal_persona_after_done=True,
             )
             while not obs.done:
                 obs = env.step(run_baseline(policy_name, obs))

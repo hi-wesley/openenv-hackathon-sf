@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate DFA Agent baselines.")
     parser.add_argument("--split", default="val", choices=["val", "test"])
     parser.add_argument("--policy", default="all")
-    parser.add_argument("--simulator-backend", default="mock")
+    parser.add_argument("--simulator-backend", default="local_hf")
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--max-turns", type=int, default=4)
     parser.add_argument("--output-prefix", default="outputs/evals/baselines")
@@ -37,7 +37,6 @@ def main() -> None:
                 seed=args.seed,
                 max_turns=args.max_turns,
                 mode="train",
-                reveal_persona_after_done=True,
             )
             while not observation.done:
                 observation = env.step(run_baseline(policy_name, observation))
@@ -58,7 +57,7 @@ def main() -> None:
                     parse_validity=1.0,
                     turns_used=int(env.state.final_summary["turns_used"]),
                     invalid_action_count=env.state.invalid_action_count,
-                    persona_summary=env.state.persona.reveal_dict(),
+                    customer_summary=env.state.final_summary.get("customer_summary", {}),
                     metadata={"done_reason": env.state.done_reason},
                 )
             )
@@ -72,4 +71,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

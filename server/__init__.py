@@ -1,4 +1,1 @@
-from .environment import DFAAgentEnvironment
-
-__all__ = ["DFAAgentEnvironment"]
-
+__all__: list[str] = []

@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-base-url", default="")
     parser.add_argument("--api-model", default="")
     parser.add_argument("--api-key", default="")
-    parser.add_argument("--simulator-backend", default="mock")
+    parser.add_argument("--simulator-backend", default="local_hf")
     parser.add_argument("--max-turns", type=int, default=4)
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--output-prefix", default="outputs/evals/colab_eval")
@@ -87,7 +87,6 @@ def main() -> None:  # pragma: no cover
             seed=args.seed,
             mode="train",
             simulator_backend=args.simulator_backend,
-            reveal_persona_after_done=True,
         )
         while not observation.done:
             observation = env.step(generator(observation))
@@ -108,7 +107,7 @@ def main() -> None:  # pragma: no cover
                 parse_validity=1.0,
                 turns_used=int(env.state.final_summary.get("turns_used", 0)),
                 invalid_action_count=int(env.state.invalid_action_count),
-                persona_summary=env.state.persona.reveal_dict(),
+                customer_summary=env.state.final_summary.get("customer_summary", {}),
                 metadata={"done_reason": env.state.done_reason},
             )
         )

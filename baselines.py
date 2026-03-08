@@ -6,115 +6,89 @@ from typing import Callable, Dict
 from .models import AssistantAction, DFAObservation
 
 
-def _text_flags(text: str) -> dict[str, bool]:
-    lowered = text.lower()
-    return {
-        "urgent": any(word in lowered for word in ["urgent", "asap", "quick", "soon", "deadline"]),
-        "stressed": any(word in lowered for word in ["stressed", "overwhelmed", "frustrated", "anxious", "panic"]),
-        "formal": any(word in lowered for word in ["boss", "client", "professor", "landlord", "refund", "policy"]),
-        "wants_brief": any(word in lowered for word in ["brief", "short", "concise"]),
-        "wants_detail": any(word in lowered for word in ["detail", "step by step", "explain", "walk me through"]),
-    }
-
-
 def _stable_phrase(seed_text: str, options: list[str]) -> str:
     digest = hashlib.sha256(seed_text.encode("utf-8")).digest()
     return options[digest[0] % len(options)]
 
 
-def _base_message(obs: DFAObservation) -> str:
-    latest = obs.latest_user_message.strip()
-    family = obs.family.replace("_", " ")
-    opener = _stable_phrase(
-        obs.scenario_id + latest,
+def _acknowledgement(observation: DFAObservation) -> str:
+    if observation.customer_emotion_scores.anger >= 0.5 or observation.customer_emotion_scores.annoyance >= 0.5:
+        return _stable_phrase(
+            observation.scenario_id + observation.latest_user_message,
+            [
+                "I understand why this is frustrating.",
+                "I’m sorry this has been such a frustrating experience.",
+                "I can see why you’re upset about this.",
+            ],
+        )
+    return _stable_phrase(
+        observation.scenario_id + observation.latest_user_message,
         [
-            "Here is a draft you can use.",
-            "I would handle it like this.",
-            "This response should move things forward.",
+            "Thanks for explaining what happened.",
+            "I appreciate the context.",
+            "Thanks for spelling that out clearly.",
         ],
     )
-    return f"{opener} It addresses the {family} situation while staying grounded in what the user has shared: {latest[:220]}"
 
 
 def default_policy(observation: DFAObservation) -> AssistantAction:
-    flags = _text_flags(observation.latest_user_message)
-    verbosity = "low" if flags["wants_brief"] or flags["urgent"] else "high" if flags["wants_detail"] else "medium"
-    warmth = "high" if flags["stressed"] else "medium"
-    humor = "low" if flags["formal"] or flags["stressed"] else "medium"
-    formality = "high" if flags["formal"] else "medium"
-    directness = "high" if flags["urgent"] else "medium"
-    initiative = "high" if observation.turn_index <= 2 else "medium"
-    explanation_depth = "high" if flags["wants_detail"] else "low" if flags["wants_brief"] else "medium"
-    acknowledgement_style = "empathetic" if flags["stressed"] else "brief"
-    message = _base_message(observation)
-    if flags["stressed"]:
-        message += " I am keeping the tone calm and practical."
-    if flags["urgent"]:
-        message += " I am prioritizing the fastest path to a workable next step."
+    family = observation.family
+    latest = observation.latest_user_message
+    prefix = _acknowledgement(observation)
+    if family == "late_delivery_refund":
+        message = (
+            f"{prefix} I want to help move this forward. "
+            "I would confirm the order details, check the shipping failure, and if the delay has made the order useless for you, I would move toward a refund or make-good right away."
+        )
+    elif family == "damaged_item_replacement":
+        message = (
+            f"{prefix} This should not have arrived in that condition. "
+            "I would verify the order and start a replacement as quickly as possible so you are not stuck with a damaged item."
+        )
+    else:
+        message = (
+            f"{prefix} I want to sort out the unexpected charge. "
+            "I would review the cancellation and billing timeline, explain what happened clearly, and if the charge was incorrect, move toward reversing it."
+        )
+    if latest.endswith("?"):
+        message += " I’ll keep this simple and focused on the next step."
+    return AssistantAction(message=message)
+
+
+def empathetic_policy(observation: DFAObservation) -> AssistantAction:
     return AssistantAction(
-        verbosity=verbosity,
-        warmth=warmth,
-        humor=humor,
-        formality=formality,
-        directness=directness,
-        initiative=initiative,
-        explanation_depth=explanation_depth,
-        acknowledgement_style=acknowledgement_style,
-        message=message,
+        message=(
+            f"{_acknowledgement(observation)} You should not have to chase this down. "
+            "I’ll focus on a clear resolution and keep the next steps simple."
+        )
     )
 
 
-def always_concise_policy(observation: DFAObservation) -> AssistantAction:
+def refund_first_policy(observation: DFAObservation) -> AssistantAction:
     return AssistantAction(
-        verbosity="low",
-        warmth="medium",
-        humor="low",
-        formality="medium",
-        directness="high",
-        initiative="medium",
-        explanation_depth="low",
-        acknowledgement_style="brief",
-        message=f"Short version: {_base_message(observation)}",
+        message=(
+            f"{_acknowledgement(observation)} If this situation warrants it, "
+            "I would prioritize a refund or billing correction instead of asking you to repeat the whole story."
+        )
     )
 
 
-def always_warm_detailed_policy(observation: DFAObservation) -> AssistantAction:
+def concise_policy(observation: DFAObservation) -> AssistantAction:
     return AssistantAction(
-        verbosity="high",
-        warmth="high",
-        humor="low",
-        formality="medium",
-        directness="medium",
-        initiative="high",
-        explanation_depth="high",
-        acknowledgement_style="empathetic",
-        message=f"I can help with this carefully. {_base_message(observation)} I would also explain the reasoning and give a fuller draft plus next steps.",
-    )
-
-
-def always_formal_direct_policy(observation: DFAObservation) -> AssistantAction:
-    return AssistantAction(
-        verbosity="medium",
-        warmth="low",
-        humor="low",
-        formality="high",
-        directness="high",
-        initiative="medium",
-        explanation_depth="medium",
-        acknowledgement_style="none",
-        message=f"Recommended formal response: {_base_message(observation)} The wording should stay clear, specific, and bounded.",
+        message=(
+            f"{_acknowledgement(observation)} I’ll review the case and move to the fastest fix."
+        )
     )
 
 
 BASELINE_REGISTRY: Dict[str, Callable[[DFAObservation], AssistantAction]] = {
     "default_policy": default_policy,
-    "always_concise_policy": always_concise_policy,
-    "always_warm_detailed_policy": always_warm_detailed_policy,
-    "always_formal_direct_policy": always_formal_direct_policy,
+    "empathetic_policy": empathetic_policy,
+    "refund_first_policy": refund_first_policy,
+    "concise_policy": concise_policy,
 }
 
 
 def run_baseline(name: str, observation: DFAObservation) -> AssistantAction:
     policy = BASELINE_REGISTRY.get(name, default_policy)
     return policy(observation)
-

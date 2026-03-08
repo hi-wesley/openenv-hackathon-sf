@@ -22,17 +22,17 @@ from dfa_agent_env.serialization import extract_first_json_object, parse_action_
 
 class SerializationTests(unittest.TestCase):
     def test_extract_first_json_object(self) -> None:
-        blob = extract_first_json_object('noise {"message":"hi","verbosity":"medium"} trailing')
-        self.assertEqual(blob, '{"message":"hi","verbosity":"medium"}')
+        blob = extract_first_json_object('noise {"message":"hi"} trailing')
+        self.assertEqual(blob, '{"message":"hi"}')
 
     def test_parse_action_response(self) -> None:
         text = """
         Sure:
-        {"verbosity":"high","warmth":"medium","humor":"low","formality":"high","directness":"medium","initiative":"medium","explanation_depth":"high","acknowledgement_style":"brief","message":"Here is a polished draft."}
+        {"message":"I can help resolve this and move toward a refund."}
         """
         parsed = parse_action_response(text)
         self.assertIsNone(parsed.parse_error)
-        self.assertEqual(parsed.action.message, "Here is a polished draft.")
+        self.assertEqual(parsed.action.message, "I can help resolve this and move toward a refund.")
 
     def test_message_only_fallback(self) -> None:
         parsed = parse_action_response("Just send a short apology and ask for a new time.", allow_message_only=True)

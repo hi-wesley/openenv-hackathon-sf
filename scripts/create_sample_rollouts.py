@@ -22,7 +22,6 @@ def main() -> None:
             simulator_backend="mock",
             seed=args.seed,
             mode="demo",
-            reveal_persona_after_done=True,
         )
         while not obs.done:
             obs = env.step(run_baseline("default_policy", obs))

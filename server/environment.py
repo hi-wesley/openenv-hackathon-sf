@@ -7,24 +7,22 @@ from dfa_agent_env.compat import Environment
 from dfa_agent_env.config import EnvConfig, get_config
 from dfa_agent_env.models import (
     AssistantAction,
+    ChatState,
     ConversationMessage,
     DFAEnvState,
     DFAObservation,
-    ParseOutcome,
+    EmotionScores,
     ScorerInputs,
+    SimulatorInput,
 )
 from dfa_agent_env.scenario_schema import select_scenario
 from dfa_agent_env.scoring import BaseSatisfactionScorer, build_scorer
 from dfa_agent_env.serialization import build_prompt_text
-from dfa_agent_env.server.persona_sampler import (
-    apply_assistant_action,
-    apply_simulator_delta,
-    initial_hidden_state,
-    sample_persona,
-)
+from dfa_agent_env.server.persona_sampler import initial_chat_state, update_chat_state
 from dfa_agent_env.server.reward_pipeline import compute_reward_components
 from dfa_agent_env.server.simulator_factory import build_simulator
 from dfa_agent_env.server.trace import build_episode_trace
+from dfa_agent_env.server.utils import score_customer_emotions
 
 
 class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvState]):
@@ -47,6 +45,7 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
     def current_observation(self) -> DFAObservation:
         if not self._state.scenario:
             raise RuntimeError("Environment has not been reset.")
+        chat_state = self._state.chat_state or ChatState()
         observation = DFAObservation(
             scenario_id=self._state.scenario.scenario_id,
             family=self._state.scenario.family,
@@ -57,21 +56,12 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
             visible_context=self._state.scenario.visible_context,
             assistant_last_action_summary=self._last_action_summary(),
             task_progress_visible=self._visible_progress(),
+            customer_emotion_scores=chat_state.emotion_scores,
+            customer_satisfaction_score=chat_state.satisfaction_score,
             done_reason=self._state.done_reason,
-            available_style_axes=[
-                "verbosity",
-                "warmth",
-                "humor",
-                "formality",
-                "directness",
-                "initiative",
-                "explanation_depth",
-                "acknowledgement_style",
-            ],
             episode_metrics_visible=self._episode_metrics(),
             parse_error=self._state.final_summary.get("last_parse_error"),
             simulator_backend=self._state.simulator_backend,
-            revealable_persona=self._reveal_persona_if_allowed(),
             done=bool(self._state.done_reason),
             reward=self._state.reward_components[-1].combined_reward if self._state.reward_components else 0.0,
         )
@@ -92,8 +82,6 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
         mode: str = "demo",
         simulator_backend: str | None = None,
         difficulty: str | None = None,
-        reveal_persona_after_done: bool | None = None,
-        use_debug_heuristic_scorer: bool = False,
         family: str | None = None,
         **_: Any,
     ) -> DFAObservation:
@@ -108,31 +96,15 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
             self.config.default_max_turns_demo if mode == "demo" else self.config.default_max_turns_train
         )
         max_turns = min(max_turns, self.config.max_turns_limit)
-        rng_seed = seed if seed is not None else 0
-        rng = __import__("random").Random(rng_seed)
-        persona = sample_persona(rng, scenario, difficulty=difficulty)
-        hidden_state = initial_hidden_state(persona, scenario)
-        if use_debug_heuristic_scorer:
-            self._scorer = build_scorer("debug_proxy", self.config.constant_scorer_value)
-        else:
-            self._scorer = build_scorer(self.config.default_scorer, self.config.constant_scorer_value)
+        self._scorer = build_scorer(self.config.default_scorer, self.config.constant_scorer_value)
         self._state = DFAEnvState(
             episode_id=episode_id or str(uuid.uuid4()),
             step_count=0,
             scenario=scenario,
-            persona=persona,
-            hidden_state=hidden_state,
-            conversation=[
-                ConversationMessage(
-                    role="user",
-                    content=scenario.initial_user_message,
-                    turn_index=0,
-                    metadata={"source": "scenario"},
-                )
-            ],
+            chat_state=initial_chat_state(),
+            conversation=[],
             turn_index=0,
             max_turns=max_turns,
-            task_progress_hidden={"goal_progress": 0.0, "task_completed": False},
             satisfaction_score=None,
             per_turn_logs=[],
             final_summary={},
@@ -144,60 +116,70 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
             invalid_action_count=0,
             done_reason=None,
             simulator_backend=(simulator_backend or self.config.default_simulator_backend),
-            reveal_persona_after_done=(
-                self.config.reveal_persona_after_done_default
-                if reveal_persona_after_done is None
-                else reveal_persona_after_done
-            ),
         )
+        self._generate_opening_customer_turn()
         return self.current_observation()
 
     def step(self, action: AssistantAction, timeout_s: float | None = None, **_: Any) -> DFAObservation:
-        if not self._state.scenario or not self._state.persona or not self._state.hidden_state:
+        if not self._state.scenario or not self._state.chat_state:
             raise RuntimeError("Call reset() before step().")
         if self._state.done_reason:
             return self.current_observation()
+
         normalized_action = action.normalized()
         parse_error = None
         validation_errors = normalized_action.validate_action(self.config.message_char_budget)
         if validation_errors:
             self._state.invalid_action_count += 1
             parse_error = "; ".join(validation_errors)
-            normalized_action = AssistantAction.default("I want to help with this. Let me adjust.")
+            normalized_action = AssistantAction.default("I’m here to help. Let me give a clearer response.")
+
         self._state.conversation.append(
             ConversationMessage(
                 role="assistant",
                 content=normalized_action.message,
                 turn_index=self._state.turn_index + 1,
-                strategy=normalized_action.strategy_summary(),
+                metadata=normalized_action.summary(),
             )
         )
-        self._state.hidden_state = apply_assistant_action(self._state.hidden_state, self._state.persona, normalized_action)
+
+        previous_emotions = self._state.chat_state.emotion_scores
         simulator = build_simulator(self._state.simulator_backend, self.config)
-        sim_input = self._build_simulator_input(normalized_action)
-        simulator_output = simulator.generate_reply(sim_input)
+        simulator_output = simulator.generate_reply(self._build_simulator_input(normalized_action))
         if simulator_output.backend_error:
             self._state.final_summary["backend_error"] = simulator_output.backend_error
-        self._state.hidden_state = apply_simulator_delta(self._state.hidden_state, simulator_output.latent_state_delta)
+
+        current_emotions = score_customer_emotions(simulator_output.user_message)
+        current_score = current_emotions.composite()
+        self._state.chat_state = update_chat_state(
+            self._state.chat_state,
+            customer_emotions=current_emotions,
+            objective_achieved=simulator_output.objective_achieved,
+            continue_episode=simulator_output.continue_episode,
+            extra_signals=simulator_output.proxy_signals,
+        )
         if simulator_output.user_message:
             self._state.conversation.append(
                 ConversationMessage(
                     role="user",
                     content=simulator_output.user_message,
                     turn_index=self._state.turn_index + 1,
-                    metadata={"simulator_backend": self._state.simulator_backend},
+                    metadata={
+                        "simulator_backend": self._state.simulator_backend,
+                        "emotion_scores": current_emotions.model_dump(),
+                        "satisfaction_score": current_score,
+                    },
                 )
             )
+
         self._state.turn_index += 1
         self._state.step_count = self._state.turn_index
         visible_progress = simulator_output.visible_progress_update or {}
-        self._state.task_progress_hidden["goal_progress"] = self._state.hidden_state.goal_progress
-        self._state.task_progress_hidden["task_completed"] = bool(simulator_output.objective_achieved)
         done_reason = self._decide_done(simulator_output, parse_error=parse_error)
+
         reward_components = compute_reward_components(
-            action=normalized_action,
-            persona=self._state.persona,
-            simulator_output=simulator_output,
+            previous_emotions=previous_emotions,
+            current_emotions=current_emotions,
             parse_valid=parse_error is None,
             parse_error=parse_error,
             scorer_result=None,
@@ -206,8 +188,9 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
         self._state.reward_components.append(reward_components)
         self._state.per_turn_logs.append(
             self._build_turn_log(
-                normalized_action,
+                normalized_action.message,
                 simulator_output.user_message,
+                current_emotions,
                 reward_components,
                 parse_error,
                 visible_progress,
@@ -223,6 +206,7 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
             self._state.final_summary = self._episode_metrics()
             self._state.final_summary["trace"] = trace.model_dump()
             self._state.final_summary["scorer"] = scorer_result.model_dump()
+
         observation = self.current_observation()
         observation.reward = reward_components.combined_reward
         observation.done = bool(done_reason)
@@ -234,19 +218,48 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
     def close(self) -> None:
         return None
 
-    def _build_simulator_input(self, action: AssistantAction):
-        from dfa_agent_env.models import SimulatorInput
+    def _generate_opening_customer_turn(self) -> None:
+        simulator = build_simulator(self._state.simulator_backend, self.config)
+        output = simulator.generate_opening_message(self._build_simulator_input(None, opening=True))
+        opening_text = output.user_message or self._state.scenario.initial_user_message
+        opening_emotions = score_customer_emotions(opening_text)
+        opening_score = opening_emotions.composite()
+        self._state.chat_state = update_chat_state(
+            self._state.chat_state or initial_chat_state(),
+            customer_emotions=opening_emotions,
+            objective_achieved=output.objective_achieved,
+            continue_episode=output.continue_episode,
+            extra_signals=output.proxy_signals,
+        )
+        self._state.conversation.append(
+            ConversationMessage(
+                role="user",
+                content=opening_text,
+                turn_index=0,
+                metadata={
+                    "simulator_backend": self._state.simulator_backend,
+                    "opening_turn": True,
+                    "emotion_scores": opening_emotions.model_dump(),
+                    "satisfaction_score": opening_score,
+                },
+            )
+        )
+        if output.backend_error:
+            self._state.final_summary["backend_error"] = output.backend_error
 
+    def _build_simulator_input(self, action: AssistantAction | None, opening: bool = False) -> SimulatorInput:
         return SimulatorInput(
             scenario=self._state.scenario,
-            persona=self._state.persona,
-            hidden_state=self._state.hidden_state,
             conversation=self._state.conversation,
-            latest_action=action,
-            latest_assistant_message=action.message,
-            turn_index=self._state.turn_index + 1,
+            latest_assistant_message=action.message if action else "",
+            latest_customer_message=self._latest_user_message(),
+            latest_customer_emotions=(
+                self._state.chat_state.emotion_scores if self._state.chat_state else EmotionScores()
+            ),
+            turn_index=self._state.turn_index + (0 if opening else 1),
             max_turns=self._state.max_turns,
             mode=self._state.mode,
+            opening_turn=opening,
         )
 
     def _decide_done(self, simulator_output, *, parse_error: str | None) -> str | None:
@@ -254,7 +267,7 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
             return "invalid_action_threshold_reached"
         if simulator_output.backend_error and self.config.strict_backend_errors:
             return "fatal_backend_error"
-        if simulator_output.objective_achieved:
+        if simulator_output.objective_achieved or (self._state.chat_state and self._state.chat_state.objective_achieved):
             return "objective_achieved"
         if not simulator_output.continue_episode:
             return "simulator_stopped"
@@ -265,11 +278,10 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
     def _finalize_episode(self):
         self._state.scorer_inputs = ScorerInputs(
             scenario=self._state.scenario,
-            persona=self._state.persona,
             conversation=self._state.conversation,
             turn_logs=self._state.per_turn_logs,
             reward_components=self._state.reward_components,
-            final_hidden_state=self._state.hidden_state,
+            final_chat_state=self._state.chat_state,
             final_summary=self._episode_metrics(),
             mode=self._state.mode,
             simulator_backend=self._state.simulator_backend,
@@ -286,20 +298,21 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
         if scorer_result.available and scorer_result.score is not None:
             final_score = float(scorer_result.score)
         reward = self._state.reward_components[-1]
-        reward.satisfaction_score_reward = final_score
+        reward.final_satisfaction_reward = final_score
         reward.combined_reward = (
-            self.config.reward_weight_task_progress * reward.task_progress_reward
+            self.config.reward_weight_score_delta * reward.score_delta_reward
+            + self.config.reward_weight_turn_satisfaction * reward.turn_satisfaction_reward
             + self.config.reward_weight_format_validity * reward.format_validity_reward
-            + self.config.reward_weight_instruction_following * reward.instruction_following_reward
-            + self.config.reward_weight_satisfaction_score * reward.satisfaction_score_reward
+            + self.config.reward_weight_satisfaction_score * reward.final_satisfaction_reward
         )
         if self._state.per_turn_logs:
             self._state.per_turn_logs[-1].reward_components = reward
 
     def _build_turn_log(
         self,
-        action: AssistantAction,
-        user_message: str,
+        assistant_message: str,
+        customer_message: str,
+        customer_emotions: EmotionScores,
         reward_components,
         parse_error: str | None,
         visible_progress: Dict[str, Any],
@@ -310,13 +323,14 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
 
         return TurnLog(
             turn_index=self._state.turn_index,
-            assistant_action=action.model_dump(),
-            user_message=user_message,
+            assistant_message=assistant_message,
+            customer_message=customer_message,
+            customer_emotion_scores=customer_emotions,
+            customer_satisfaction_score=customer_emotions.composite(),
             reward_components=reward_components,
             parse_valid=parse_error is None,
             parse_error=parse_error,
             visible_progress=visible_progress,
-            hidden_state_snapshot=self._state.hidden_state.model_dump(),
             simulator_notes=simulator_output.simulator_notes,
             proxy_signals=simulator_output.proxy_signals,
             done=bool(done_reason),
@@ -331,37 +345,55 @@ class DFAAgentEnvironment(Environment[AssistantAction, DFAObservation, DFAEnvSta
 
     def _last_action_summary(self) -> Dict[str, Any]:
         for message in reversed(self._state.conversation):
-            if message.role == "assistant" and message.strategy:
-                return message.strategy
+            if message.role == "assistant":
+                return {
+                    "message_length": len(message.content),
+                }
         return {}
 
     def _visible_progress(self) -> Dict[str, Any]:
         if self._state.per_turn_logs:
-            return self._state.per_turn_logs[-1].visible_progress
-        return {"status": "episode_started", "goal_progress_hint": 0.0}
+            latest = self._state.per_turn_logs[-1]
+            return {
+                "status": latest.visible_progress.get("status", "conversation_active"),
+                "current_satisfaction_score": latest.customer_satisfaction_score,
+                "emotion_scores": latest.customer_emotion_scores.model_dump(),
+            }
+        chat_state = self._state.chat_state or ChatState()
+        return {
+            "status": "customer_opened_case",
+            "current_satisfaction_score": chat_state.satisfaction_score,
+            "emotion_scores": chat_state.emotion_scores.model_dump(),
+        }
 
     def _episode_metrics(self) -> Dict[str, Any]:
         total_reward = sum(item.combined_reward for item in self._state.reward_components)
         shaped_reward = sum(
-            item.task_progress_reward + item.format_validity_reward + item.instruction_following_reward
+            item.score_delta_reward + item.turn_satisfaction_reward + item.format_validity_reward
             for item in self._state.reward_components
         )
-        final_reward = self._state.satisfaction_score.score if self._state.satisfaction_score and self._state.satisfaction_score.score is not None else 0.0
+        final_reward = (
+            self._state.satisfaction_score.score
+            if self._state.satisfaction_score and self._state.satisfaction_score.score is not None
+            else 0.0
+        )
+        chat_state = self._state.chat_state or ChatState()
         return {
             "total_reward": round(total_reward, 4),
             "shaped_reward_only": round(shaped_reward, 4),
             "final_satisfaction_reward": round(float(final_reward), 4),
-            "task_completion_flag": bool(self._state.task_progress_hidden.get("task_completed", False)),
+            "task_completion_flag": bool(chat_state.objective_achieved),
             "invalid_action_count": self._state.invalid_action_count,
             "turns_used": self._state.turn_index,
             "early_termination": self._state.turn_index < self._state.max_turns and bool(self._state.done_reason),
             "scenario_family": self._state.scenario.family if self._state.scenario else None,
-            "persona_summary": self._state.persona.reveal_dict() if self._state.persona else {},
             "simulator_backend": self._state.simulator_backend,
             "done_reason": self._state.done_reason,
+            "customer_emotion_scores": chat_state.emotion_scores.model_dump(),
+            "customer_satisfaction_score": round(float(chat_state.satisfaction_score), 4),
+            "customer_summary": {
+                "emotion_scores": chat_state.emotion_scores.model_dump(),
+                "satisfaction_score": round(float(chat_state.satisfaction_score), 4),
+                "objective_achieved": bool(chat_state.objective_achieved),
+            },
         }
-
-    def _reveal_persona_if_allowed(self):
-        if self._state.done_reason and self._state.reveal_persona_after_done and self._state.persona:
-            return self._state.persona.reveal_dict()
-        return None

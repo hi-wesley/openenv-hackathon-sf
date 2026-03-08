@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-base-url", default="")
     parser.add_argument("--api-model", default="")
     parser.add_argument("--api-key", default="")
-    parser.add_argument("--simulator-backend", default="mock")
+    parser.add_argument("--simulator-backend", default="local_hf")
     parser.add_argument("--seed", type=int, default=19)
     parser.add_argument("--max-turns", type=int, default=4)
     parser.add_argument("--output-prefix", default="outputs/evals/model_eval")
@@ -87,7 +87,6 @@ def main() -> None:
             seed=args.seed,
             max_turns=args.max_turns,
             mode="train",
-            reveal_persona_after_done=True,
         )
         while not obs.done:
             obs = env.step(generator(obs))
@@ -108,7 +107,7 @@ def main() -> None:
                 parse_validity=1.0,
                 turns_used=int(env.state.final_summary["turns_used"]),
                 invalid_action_count=env.state.invalid_action_count,
-                persona_summary=env.state.persona.reveal_dict(),
+                customer_summary=env.state.final_summary.get("customer_summary", {}),
                 metadata={"done_reason": env.state.done_reason},
             )
         )
@@ -122,4 +121,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
