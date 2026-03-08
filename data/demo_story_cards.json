@@ -1,0 +1,39 @@
+[
+  {
+    "title": "Boss Email Under Deadline",
+    "scenario_id": "email_boss_deadline_train_01",
+    "family": "tough_email_reply",
+    "hook": "A stressed employee needs a reply that is brief, respectful, and not defensive."
+  },
+  {
+    "title": "Travel Reschedule Tension",
+    "scenario_id": "schedule_travel_coordination_train_03",
+    "family": "schedule_conflict_planning",
+    "hook": "The user is juggling flights and a teammate with limited windows."
+  },
+  {
+    "title": "Account Lockout With Panic",
+    "scenario_id": "troubleshoot_account_lockout_train_03",
+    "family": "troubleshooting_support",
+    "hook": "The user is locked out before an important deadline and needs calm triage."
+  },
+  {
+    "title": "Refund Exception Ask",
+    "scenario_id": "negotiate_refund_policy_train_01",
+    "family": "negotiation_exception_request",
+    "hook": "The user wants a persuasive but not aggressive refund request."
+  },
+  {
+    "title": "Overwhelmed Friend Message",
+    "scenario_id": "emotion_overwhelmed_friend_train_02",
+    "family": "emotionally_charged_message_handling",
+    "hook": "The user needs help sounding warm without making promises they cannot keep."
+  },
+  {
+    "title": "Weekend Recommendation Mismatch",
+    "scenario_id": "recommend_weekend_plan_train_01",
+    "family": "recommendation_request",
+    "hook": "The user wants something tailored, not a generic list."
+  }
+]
+

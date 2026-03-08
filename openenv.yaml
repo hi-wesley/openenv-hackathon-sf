@@ -1,0 +1,12 @@
+name: dfa-agent
+title: DFA Agent
+version: 0.1.0
+openenv_version: 0.2.1
+description: Multi-turn adaptive assistant environment with hidden user persona, simulator backends, and pluggable final scoring.
+package: dfa_agent_env
+entrypoint: server.app:app
+client_class: dfa_agent_env.client:DFAAgentEnv
+readme: README.md
+action_class: dfa_agent_env.models:AssistantAction
+observation_class: dfa_agent_env.models:DFAObservation
+state_class: dfa_agent_env.models:DFAEnvState

@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dfa-agent-env"
+version = "0.1.0"
+description = "DFA Agent: a multi-turn OpenEnv benchmark for adaptive assistant personalization."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "hi-wesley" }]
+dependencies = [
+  "openenv-core==0.2.1",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "gradio>=5.0.0",
+  "pydantic>=2.8.0",
+  "PyYAML>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.6.0",
+  "mypy>=1.11.0",
+]
+train = [
+  "accelerate>=1.0.0",
+  "datasets>=3.0.0",
+  "peft>=0.13.0",
+  "trl>=0.26.1",
+  "transformers>=4.46.0",
+]
+eval = [
+  "transformers>=4.46.0",
+]
+
+[project.scripts]
+dfa-agent-server = "dfa_agent_env.server.app:main"
+
+[tool.setuptools]
+packages = ["dfa_agent_env", "dfa_agent_env.server", "dfa_agent_env.training"]
+
+[tool.setuptools.package-dir]
+"dfa_agent_env" = "."
+"dfa_agent_env.server" = "server"
+"dfa_agent_env.training" = "training"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
